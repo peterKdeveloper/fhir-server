@@ -59,7 +59,16 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors
 
             var newTableExpressions = new List<SearchParamTableExpression>();
             newTableExpressions.AddRange(expression.SearchParamTableExpressions);
-            var continuationToken = ContinuationToken.FromString(context.ContinuationToken);
+            ContinuationToken continuationToken;
+
+            if (context.UseIndexedPaging)
+            {
+                continuationToken = null;
+            }
+            else
+            {
+                continuationToken = ContinuationToken.FromString(context.ContinuationToken);
+            }
 
             if (!matchFound)
             {
@@ -74,7 +83,11 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors
                         continuationToken.ResourceSurrogateId == 0 &&
                         continuationToken.SortValue == SqlSearchConstants.SortSentinelValueForCt))
                 {
-                    context.ContinuationToken = null;
+                    if (continuationToken != null)
+                    {
+                        context.ContinuationToken = null;
+                    }
+
                     if (context.Sort[0].sortOrder == SortOrder.Descending)
                     {
                         // For descending order, the second phase of the sort query deals with searching

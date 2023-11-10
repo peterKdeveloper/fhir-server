@@ -153,7 +153,7 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                 // DISTINCT is used since different ctes may return the same resources due to _include and _include:iterate search parameters
                 StringBuilder.Append("SELECT DISTINCT ");
 
-                if (expression.SearchParamTableExpressions.Count == 0)
+                if (!searchOptions.UseIndexedPaging && expression.SearchParamTableExpressions.Count == 0)
                 {
                     StringBuilder.Append("TOP (").Append(Parameters.AddParameter(context.MaxItemCount + 1, includeInHash: false)).Append(") ");
                 }
@@ -279,6 +279,14 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
             {
                 // this is selecting only from the last CTE (for a count)
                 StringBuilder.Append("FROM ").AppendLine(TableExpressionName(_tableExpressionCounter));
+            }
+
+            if (!searchOptions.CountOnly &&
+                expression.SearchParamTableExpressions.Count == 0 &&
+                searchOptions.UseIndexedPaging)
+            {
+                StringBuilder.AppendLine($"OFFSET ({Parameters.AddParameter(context.GetOffset(), includeInHash: false)}) ROWS")
+                    .AppendLine($"FETCH NEXT {Parameters.AddParameter(context.MaxItemCount + 1, includeInHash: false)} ROWS ONLY");
             }
 
             if (Parameters.HasParametersToHash)
@@ -607,12 +615,23 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
 
             // Everything in the top expression is considered a match
             const string selectStatement = "SELECT DISTINCT";
-            StringBuilder.Append(selectStatement).Append(" TOP (").Append(Parameters.AddParameter(context.MaxItemCount + 1, includeInHash: false)).Append(") T1, Sid1, 1 AS IsMatch, 0 AS IsPartial ")
+            StringBuilder.Append(selectStatement);
+            if (!context.UseIndexedPaging)
+            {
+                StringBuilder.Append(" TOP (").Append(Parameters.AddParameter(context.MaxItemCount + 1, includeInHash: false)).Append(')');
+            }
+
+            StringBuilder.Append(" T1, Sid1, 1 AS IsMatch, 0 AS IsPartial ")
                 .AppendLine(sortExpression == null ? string.Empty : $", {sortExpression}")
                 .Append("FROM ").AppendLine(tableExpressionName);
 
             AppendOrderBy();
             StringBuilder.AppendLine();
+            if (context.UseIndexedPaging)
+            {
+                StringBuilder.AppendLine($"OFFSET ({Parameters.AddParameter(context.GetOffset(), includeInHash: false)}) ROWS")
+    .AppendLine($"FETCH NEXT {Parameters.AddParameter(context.MaxItemCount + 1, includeInHash: false)} ROWS ONLY");
+            }
 
             if (hasIncludeExpression)
             {
@@ -1070,7 +1089,7 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                     }
 
                     // if continuation token exists, add it to the query
-                    if (sortContext.ContinuationToken != null)
+                    if (!context.UseIndexedPaging && sortContext.ContinuationToken != null)
                     {
                         var sortOperand = sortContext.SortOrder == SortOrder.Ascending ? ">" : "<";
 
@@ -1119,7 +1138,7 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                     }
 
                     // if continuation token exists, add it to the query
-                    if (sortContext.ContinuationToken != null)
+                    if (!context.UseIndexedPaging && sortContext.ContinuationToken != null)
                     {
                         var sortOperand = sortContext.SortOrder == SortOrder.Ascending ? ">" : "<";
 
@@ -1450,13 +1469,16 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                 (searchParamInfo, sortContext.SortOrder) = context.Sort[0];
             }
 
-            sortContext.ContinuationToken = ContinuationToken.FromString(context.ContinuationToken);
+            if (!context.UseIndexedPaging)
+            {
+                sortContext.ContinuationToken = ContinuationToken.FromString(context.ContinuationToken);
+            }
 
             switch (searchParamInfo.Type)
             {
                 case ValueSets.SearchParamType.Date:
                     sortContext.SortColumnName = VLatest.DateTimeSearchParam.StartDateTime;
-                    if (sortContext.ContinuationToken != null)
+                    if (sortContext.ContinuationToken != null && !context.UseIndexedPaging)
                     {
                         DateTime dateSortValue;
                         if (DateTime.TryParseExact(sortContext.ContinuationToken.SortValue, "o", null, DateTimeStyles.None, out dateSortValue))
@@ -1468,7 +1490,7 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                     break;
                 case ValueSets.SearchParamType.String:
                     sortContext.SortColumnName = VLatest.StringSearchParam.Text;
-                    if (sortContext.ContinuationToken != null)
+                    if (sortContext.ContinuationToken != null && !context.UseIndexedPaging)
                     {
                         sortContext.SortValue = sortContext.ContinuationToken.SortValue;
                     }
