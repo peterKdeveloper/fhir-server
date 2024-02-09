@@ -3,14 +3,11 @@
 // Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
-using Microsoft.Health.Fhir.Core.Features.Operations;
+using Microsoft.Health.Extensions.DependencyInjection;
 
-namespace Microsoft.Health.Fhir.Core.Configs;
+namespace Microsoft.Health.Fhir.Core.Features.Operations;
 
-public class HostingBackgroundServiceQueueItem
+public interface IScopeProvider<T>
 {
-    public QueueType Queue { get; set; }
-
-    // TODO: This is not honored. Make sure that it is not used in PaaS and remove.
-    public bool UpdateProgressOnHeartbeat { get; set; }
+    IScoped<T> Invoke();
 }
