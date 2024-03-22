@@ -82,14 +82,22 @@ namespace Microsoft.Health.Fhir.Importer
             blobs = blobs.Skip(NumberOfBlobsToSkip).Take(MaxBlobIndexForImport - NumberOfBlobsToSkip);
             var swWrites = Stopwatch.StartNew();
             var swReport = Stopwatch.StartNew();
-            if (UseBundleBlobs)
+            long sumLatency = 0;
+            if (UseBundleBlobs || BundleType == "import")
             {
                 var totalBlobs = 0L;
                 BatchExtensions.ExecuteInParallelBatches(blobs, WriteThreads, 1, (writer, blobList) =>
                 {
                     var incrementor = new IndexIncrementor(endpoints.Count);
                     var bundle = GetTextFromBlob(blobList.Item2.First());
+                    if (BundleType == "import" && UseBundleBlobs) // add profile
+                    {
+                        bundle = bundle.Replace("{\"resourceType\":\"Bundle\",", "{\"resourceType\":\"Bundle\",\"meta\":{\"profile\":[\"http://azurehealthcareapis.com/data-extensions/import-bundle\"]},", StringComparison.OrdinalIgnoreCase);
+                    }
+
+                    var sw = Stopwatch.StartNew();
                     PostBundle(bundle, incrementor);
+                    Interlocked.Add(ref sumLatency, (int)sw.Elapsed.TotalMilliseconds);
                     Interlocked.Increment(ref totalBlobs);
                     Interlocked.Add(ref totalWrites, BatchSize);
 
@@ -100,13 +108,13 @@ namespace Microsoft.Health.Fhir.Importer
                             if (swReport.Elapsed.TotalSeconds > ReportingPeriodSec)
                             {
                                 var currWrites = Interlocked.Read(ref totalWrites);
-                                Console.WriteLine($"{DateTime.UtcNow:s}:{globalPrefix} writers={WriteThreads}: processed blobs={totalBlobs} writes={currWrites} secs={(int)swWrites.Elapsed.TotalSeconds} speed={(int)(currWrites / swWrites.Elapsed.TotalSeconds)} RPS");
+                                Console.WriteLine($"{DateTime.UtcNow:s}:{globalPrefix} writers=[{Interlocked.Read(ref writers)}/{WriteThreads}]: processed blobs={totalBlobs} writes={currWrites} secs={(int)swWrites.Elapsed.TotalSeconds} speed={(int)(currWrites / swWrites.Elapsed.TotalSeconds)} RPS latency={sumLatency / totalBlobs} msec.");
                                 swReport.Restart();
                             }
                         }
                     }
                 });
-                Console.WriteLine($"{DateTime.UtcNow:s}:{globalPrefix} writers={WriteThreads}: processed blobs={totalBlobs} total writes={totalWrites} secs={(int)swWrites.Elapsed.TotalSeconds} speed={(int)(totalWrites / swWrites.Elapsed.TotalSeconds)} RPS");
+                Console.WriteLine($"{DateTime.UtcNow:s}:{globalPrefix} writers=[{Interlocked.Read(ref writers)}/{WriteThreads}]: processed blobs={totalBlobs} total writes={totalWrites} secs={(int)swWrites.Elapsed.TotalSeconds} speed={(int)(totalWrites / swWrites.Elapsed.TotalSeconds)} RPS latency={sumLatency / totalBlobs} msec.");
                 return;
             }
 
@@ -211,18 +219,23 @@ namespace Microsoft.Health.Fhir.Importer
             string endpoint;
             do
             {
-                endpoint = endpoints[incrementor.Next()];
+                endpoint = $"{endpoints[incrementor.Next()]}{(UseBundleBlobs ? string.Empty : "/$import")}";
                 var uri = new Uri(endpoint);
                 bad = false;
                 try
                 {
                     var sw = Stopwatch.StartNew();
-                    using var content = new StringContent(bundle, Encoding.UTF8, "application/json");
+                    using var content = new StringContent(bundle, Encoding.UTF8, UseBundleBlobs ? "application/json" : "application/fhir+ndjson");
                     using var request = new HttpRequestMessage(HttpMethod.Post, uri);
-                    request.Headers.Add("x-bundle-processing-logic", "parallel");
-                    request.Content = content;
+                    if (BundleType != "import") // add parallel processing
+                    {
+                        request.Headers.Add("x-bundle-processing-logic", "parallel");
+                    }
 
+                    request.Content = content;
+                    Interlocked.Increment(ref writers);
                     var response = httpClient.Send(request);
+                    Interlocked.Decrement(ref writers);
                     if (response.StatusCode == HttpStatusCode.BadRequest)
                     {
                         Console.WriteLine(response.Content.ReadAsStringAsync().Result);
@@ -251,6 +264,7 @@ namespace Microsoft.Health.Fhir.Importer
                 }
                 catch (Exception e)
                 {
+                    Interlocked.Decrement(ref writers);
                     networkError = IsNetworkError(e);
                     if (!networkError)
                     {

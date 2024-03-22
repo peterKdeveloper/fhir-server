@@ -38,6 +38,7 @@ using Microsoft.Health.Fhir.Core.Extensions;
 using Microsoft.Health.Fhir.Core.Features;
 using Microsoft.Health.Fhir.Core.Features.Context;
 using Microsoft.Health.Fhir.Core.Features.Operations;
+using Microsoft.Health.Fhir.Core.Features.Operations.Import;
 using Microsoft.Health.Fhir.Core.Features.Operations.Versions;
 using Microsoft.Health.Fhir.Core.Features.Persistence;
 using Microsoft.Health.Fhir.Core.Features.Persistence.Orchestration;
@@ -68,6 +69,8 @@ namespace Microsoft.Health.Fhir.Api.Controllers
         private readonly ILogger<FhirController> _logger;
         private readonly RequestContextAccessor<IFhirRequestContext> _fhirRequestContextAccessor;
         private readonly IUrlResolver _urlResolver;
+        private readonly IResourceWrapperFactory _resourceWrapperFactory;
+        private readonly IImportErrorSerializer _importErrorSerializer;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FhirController" /> class.
@@ -78,13 +81,16 @@ namespace Microsoft.Health.Fhir.Api.Controllers
         /// <param name="urlResolver">The urlResolver.</param>
         /// <param name="uiConfiguration">The UI configuration.</param>
         /// <param name="authorizationService">The authorization service.</param>
+        /// <param name="resourceWrapperFactory">The resource Wrapper Factory.</param>
         public FhirController(
             IMediator mediator,
             ILogger<FhirController> logger,
             RequestContextAccessor<IFhirRequestContext> fhirRequestContextAccessor,
             IUrlResolver urlResolver,
             IOptions<FeatureConfiguration> uiConfiguration,
-            IAuthorizationService authorizationService)
+            IAuthorizationService authorizationService,
+            IResourceWrapperFactory resourceWrapperFactory,
+            IImportErrorSerializer importErrorSerializer)
         {
             EnsureArg.IsNotNull(mediator, nameof(mediator));
             EnsureArg.IsNotNull(logger, nameof(logger));
@@ -98,6 +104,8 @@ namespace Microsoft.Health.Fhir.Api.Controllers
             _logger = logger;
             _fhirRequestContextAccessor = fhirRequestContextAccessor;
             _urlResolver = urlResolver;
+            _resourceWrapperFactory = EnsureArg.IsNotNull(resourceWrapperFactory, nameof(resourceWrapperFactory));
+            _importErrorSerializer = EnsureArg.IsNotNull(importErrorSerializer, nameof(importErrorSerializer));
         }
 
         [ApiExplorerSettings(IgnoreApi = true)]
@@ -656,6 +664,11 @@ namespace Microsoft.Health.Fhir.Api.Controllers
         [AuditEventType(AuditEventSubType.BundlePost)]
         public async Task<IActionResult> BatchAndTransactions([FromBody] Resource bundle)
         {
+            if (bundle.HasImportBundleProfile())
+            {
+                return await ImportController.ImportBundleInternal(Request, bundle, _resourceWrapperFactory, _mediator, _logger, _importErrorSerializer, HttpContext.RequestAborted);
+            }
+
             ResourceElement bundleResponse = await _mediator.PostBundle(bundle.ToResourceElement());
 
             return FhirResult.Create(bundleResponse);

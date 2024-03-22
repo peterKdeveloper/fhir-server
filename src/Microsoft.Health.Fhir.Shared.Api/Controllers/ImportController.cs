@@ -5,21 +5,33 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using AngleSharp.Dom;
+using AngleSharp.Io;
 using EnsureThat;
 using Hl7.Fhir.Model;
+using Hl7.Fhir.Serialization;
 using MediatR;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 using Microsoft.Health.Api.Features.Audit;
 using Microsoft.Health.Core.Features.Context;
 using Microsoft.Health.Fhir.Api.Configs;
 using Microsoft.Health.Fhir.Api.Features.ActionResults;
 using Microsoft.Health.Fhir.Api.Features.Filters;
 using Microsoft.Health.Fhir.Api.Features.Headers;
+using Microsoft.Health.Fhir.Api.Features.Operations;
 using Microsoft.Health.Fhir.Api.Features.Operations.Import;
 using Microsoft.Health.Fhir.Api.Features.Routing;
 using Microsoft.Health.Fhir.Core.Configs;
@@ -29,9 +41,13 @@ using Microsoft.Health.Fhir.Core.Features.Context;
 using Microsoft.Health.Fhir.Core.Features.Operations;
 using Microsoft.Health.Fhir.Core.Features.Operations.Import;
 using Microsoft.Health.Fhir.Core.Features.Operations.Import.Models;
+using Microsoft.Health.Fhir.Core.Features.Persistence;
 using Microsoft.Health.Fhir.Core.Features.Routing;
 using Microsoft.Health.Fhir.Core.Messages.Import;
 using Microsoft.Health.Fhir.ValueSets;
+using Newtonsoft.Json;
+using SharpCompress.Common;
+using Task = System.Threading.Tasks.Task;
 
 namespace Microsoft.Health.Fhir.Api.Controllers
 {
@@ -58,6 +74,8 @@ namespace Microsoft.Health.Fhir.Api.Controllers
         private readonly FeatureConfiguration _features;
         private readonly ILogger<ImportController> _logger;
         private readonly ImportTaskConfiguration _importConfig;
+        private readonly IResourceWrapperFactory _resourceWrapperFactory;
+        private readonly IImportErrorSerializer _importErrorSerializer;
 
         public ImportController(
             IMediator mediator,
@@ -65,6 +83,8 @@ namespace Microsoft.Health.Fhir.Api.Controllers
             IUrlResolver urlResolver,
             IOptions<OperationsConfiguration> operationsConfig,
             IOptions<FeatureConfiguration> features,
+            IResourceWrapperFactory resourceWrapperFactory,
+            IImportErrorSerializer importErrorSerializer,
             ILogger<ImportController> logger)
         {
             EnsureArg.IsNotNull(fhirRequestContextAccessor, nameof(fhirRequestContextAccessor));
@@ -79,7 +99,88 @@ namespace Microsoft.Health.Fhir.Api.Controllers
             _urlResolver = urlResolver;
             _features = features.Value;
             _mediator = mediator;
+            _resourceWrapperFactory = EnsureArg.IsNotNull(resourceWrapperFactory, nameof(resourceWrapperFactory));
+            _importErrorSerializer = EnsureArg.IsNotNull(importErrorSerializer, nameof(importErrorSerializer));
             _logger = logger;
+        }
+
+        [HttpPost]
+        [Route(KnownRoutes.Import)]
+        [Consumes(ImportRequestExtensions.DefaultInputFormat)]
+        [AuditEventType(AuditEventSubType.ImportBundle)]
+        public async Task<IActionResult> ImportBundle()
+        {
+            return await ImportBundleInternal(Request, null, _resourceWrapperFactory, _mediator, _logger, _importErrorSerializer, HttpContext.RequestAborted);
+        }
+
+        internal static async Task<IActionResult> ImportBundleInternal(HttpRequest request, Resource bundle, IResourceWrapperFactory resourceWrapperFactory, IMediator mediator, ILogger logger, IImportErrorSerializer errorSerializer, CancellationToken cancel)
+        {
+            var sw = Stopwatch.StartNew();
+            var startDate = DateTime.UtcNow;
+            var importResources = new List<ImportResource>();
+            var fhirParser = new FhirJsonParser();
+            var importParser = new ImportResourceParser(fhirParser, resourceWrapperFactory);
+            using var reader = new StreamReader(request.Body, Encoding.UTF8);
+            var index = 0L;
+            var errors = new List<string>();
+            if (bundle == null)
+            {
+                //// ReadLineAsync accepts cancel in .NET8 but not in .NET6, hence this pragma. Pass cancel when we stop supporting .NET6.
+#pragma warning disable CA2016 // Forward the 'CancellationToken' parameter to methods
+                var line = await reader.ReadLineAsync();
+                while (line != null)
+                {
+                    AddToImportResources(line, errors);
+                    line = await reader.ReadLineAsync();
+                }
+#pragma warning restore CA2016
+            }
+            else
+            {
+                foreach (var entry in bundle.ToResourceElement().ToPoco<Bundle>().Entry) // ignore all bundle components except Resource
+                {
+                    AddToImportResources(entry.Resource, errors);
+                }
+            }
+
+            var importRequest = new ImportBundleRequest(importResources);
+            var response = await mediator.ImportBundleAsync(importRequest.Resources, cancel);
+            errors.AddRange(response.Errors);
+            var loaded = importRequest.Resources.Count - response.Errors.Count;
+            var failed = errors.Count;
+            var result = new ImportBundleActionResult(new ImportBundleResult(loaded, errors), HttpStatusCode.OK);
+            result.SetContentTypeHeader(OperationsConstants.BulkImportContentTypeHeaderValue);
+
+            await mediator.Publish(new ImportBundleMetricsNotification(startDate, DateTime.UtcNow, loaded), CancellationToken.None);
+            logger.LogInformation("Loaded={LoadedResources}, failed={FailedResources} resources, elapsed={Milliseconds} milliseconds.", loaded, failed, (int)sw.Elapsed.TotalMilliseconds);
+
+            return result;
+
+            void AddToImportResources(object input, IList<string> errors)
+            {
+                if (input is not Resource resource)
+                {
+                    try
+                    {
+                        resource = fhirParser.Parse<Resource>((string)input);
+                    }
+                    catch (FormatException ex)
+                    {
+                        errors.Add(string.Format(Resources.ParsingError, errorSerializer.Serialize(index, ex, 0)));
+                        return;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(resource.Id))
+                {
+                    errors.Add(string.Format(Resources.ParsingError, errorSerializer.Serialize(index, "Resource id is empty", 0)));
+                    return;
+                }
+
+                var importResource = importParser.Parse(index, 0, 0, resource, ImportMode.IncrementalLoad);
+                importResources.Add(importResource);
+                index++;
+            }
         }
 
         [HttpPost]
@@ -106,14 +207,14 @@ namespace Microsoft.Health.Fhir.Api.Controllers
                 throw new RequestNotValidException(Resources.InitialImportModeNotEnabled);
             }
 
-            CreateImportResponse response = await _mediator.ImportAsync(
-                 _fhirRequestContextAccessor.RequestContext.Uri,
-                 importRequest.InputFormat,
-                 importRequest.InputSource,
-                 importRequest.Input,
-                 importRequest.StorageDetail,
-                 initialLoad ? ImportMode.InitialLoad : ImportMode.IncrementalLoad, // default to incremental mode
-                 HttpContext.RequestAborted);
+            var response = await _mediator.ImportAsync(
+                    _fhirRequestContextAccessor.RequestContext.Uri,
+                    importRequest.InputFormat,
+                    importRequest.InputSource,
+                    importRequest.Input,
+                    importRequest.StorageDetail,
+                    initialLoad ? ImportMode.InitialLoad : ImportMode.IncrementalLoad, // default to incremental mode
+                    HttpContext.RequestAborted);
 
             var bulkImportResult = ImportResult.Accepted();
             bulkImportResult.SetContentLocationHeader(_urlResolver, OperationsConstants.Import, response.TaskId);

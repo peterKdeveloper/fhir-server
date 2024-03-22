@@ -18,6 +18,7 @@ using Microsoft.Health.Fhir.Core.Exceptions;
 using Microsoft.Health.Fhir.Core.Features.Context;
 using Microsoft.Health.Fhir.Core.Features.Operations.Import;
 using Microsoft.Health.Fhir.Core.Features.Operations.Import.Models;
+using Microsoft.Health.Fhir.Core.Features.Persistence;
 using Microsoft.Health.Fhir.Core.Features.Routing;
 using Microsoft.Health.Fhir.Tests.Common;
 using Microsoft.Health.Test.Utilities;
@@ -100,6 +101,8 @@ namespace Microsoft.Health.Fhir.Api.UnitTests.Controllers
                 _urlResolver,
                 optionsOperationConfiguration,
                 optionsFeatures,
+                Substitute.For<IResourceWrapperFactory>(),
+                Substitute.For<IImportErrorSerializer>(),
                 NullLogger<ImportController>.Instance);
         }
 

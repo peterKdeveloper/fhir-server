@@ -46,6 +46,7 @@ namespace Microsoft.Health.Internal.Fhir.PerfTester
         private static readonly string _nameFilter = ConfigurationManager.AppSettings["NameFilter"];
         private static readonly bool _writesEnabled = bool.Parse(ConfigurationManager.AppSettings["WritesEnabled"]);
         private static readonly int _repeat = int.Parse(ConfigurationManager.AppSettings["Repeat"]);
+        private static readonly string _diagSearches = ConfigurationManager.AppSettings["DiagSearches"];
 
         private static SqlRetryService _sqlRetryService;
         private static SqlStoreClient<SqlServerFhirDataStore> _store;
@@ -56,6 +57,12 @@ namespace Microsoft.Health.Internal.Fhir.PerfTester
             ISqlConnectionBuilder iSqlConnectionBuilder = new Sql.SqlConnectionBuilder(_connectionString);
             _sqlRetryService = SqlRetryService.GetInstance(iSqlConnectionBuilder);
             _store = new SqlStoreClient<SqlServerFhirDataStore>(_sqlRetryService, NullLogger<SqlServerFhirDataStore>.Instance);
+
+            if (_callType == "Diag")
+            {
+                Diag();
+                return;
+            }
 
             if (_callType == "GetDate" || _callType == "LogEvent")
             {
@@ -98,6 +105,56 @@ namespace Microsoft.Health.Internal.Fhir.PerfTester
                 ExecuteParallelCalls(resourceIds); // compare this
                 SwitchToResourceTable();
                 ExecuteParallelCalls(resourceIds);
+            }
+        }
+
+        private static void Diag()
+        {
+            var tasks = new List<Task>();
+            tasks.Add(BatchExtensions.StartTask(() =>
+            {
+                var sourceContainer = GetContainer(_ndjsonStorageConnectionString, _ndjsonStorageContainerName);
+                foreach (var jsonEach in GetLinesInBlobs(sourceContainer))
+                {
+                    var json = jsonEach;
+                    var (resourceType, resourceId) = ParseJson(ref json, Guid.NewGuid().ToString());
+                    var sw = Stopwatch.StartNew();
+                    PutResource(json, resourceType, resourceId);
+                    _store.TryLogEvent($"Create/{resourceType}/{resourceId}", "Warn", $"msec={(int)sw.Elapsed.TotalMilliseconds}", null, CancellationToken.None).Wait();
+                    Thread.Sleep(1000);
+                }
+            }));
+
+            var searches = _diagSearches.Split(';');
+            foreach (var search in searches)
+            {
+                tasks.Add(BatchExtensions.StartTask(() =>
+                {
+                    while (true)
+                    {
+                        DiagSearch(search);
+                        Thread.Sleep(1000);
+                    }
+                }));
+            }
+
+            Task.WaitAll(tasks.ToArray());
+        }
+
+        private static void DiagSearch(string searchStr)
+        {
+            var sw = Stopwatch.StartNew();
+            var uri = new Uri(_endpoint + "/" + searchStr);
+            retry:
+            try
+            {
+                var response = _httpClient.GetAsync(uri).Result;
+                _store.TryLogEvent($"{searchStr}:{response.StatusCode}", "Warn", $"msec={(int)sw.Elapsed.TotalMilliseconds}", null, CancellationToken.None).Wait();
+            }
+            catch (Exception e)
+            {
+                _store.TryLogEvent($"{searchStr}", "Error", e.ToString(), null, CancellationToken.None).Wait();
+                goto retry; // there should not be a reason for limiting number of tries
             }
         }
 
