@@ -434,7 +434,7 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search
 
                                 if (!clonedSearchOptions.OnlyIds)
                                 {
-                                    using var rawResourceStream = new MemoryStream(rawResourceBytes);
+                                    using var rawResourceStream = ResourceDeserializer.MemoryStreamManager.GetStream(rawResourceBytes);
                                     rawResource = _compressedRawResourceConverter.ReadCompressedRawResource(rawResourceStream);
                                 }
 
@@ -632,7 +632,7 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search
                             continue;
                         }
 
-                        using var rawResourceStream = new MemoryStream(rawResourceBytes);
+                        using var rawResourceStream = ResourceDeserializer.MemoryStreamManager.GetStream(rawResourceBytes);
                         var rawResource = _compressedRawResourceConverter.ReadCompressedRawResource(rawResourceStream);
 
                         if (string.IsNullOrEmpty(rawResource))

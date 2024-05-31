@@ -24,6 +24,8 @@ using Microsoft.Health.Fhir.Core.Extensions;
 using Microsoft.Health.Fhir.Core.Features.Context;
 using Microsoft.Health.Fhir.Core.Features.Persistence;
 using Microsoft.Health.Fhir.Core.Features.Persistence.Orchestration;
+using Microsoft.Health.Fhir.Core.Models;
+using Microsoft.Health.Fhir.Shared.Core.Features.Search;
 using static Hl7.Fhir.Model.Bundle;
 using Task = System.Threading.Tasks.Task;
 
@@ -107,7 +109,9 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
                             bundleHttpContextAccessor,
                             resourceIdProvider,
                             fhirJsonParser,
+                            _resourceDeserializer,
                             _logger,
+                            resourceExecutionContext.Resource,
                             ct);
 
                         statistics.RegisterNewEntry(resourceExecutionContext.HttpVerb, resourceExecutionContext.Index, entry.Response.Status, watch.Elapsed);
@@ -250,7 +254,9 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
             IBundleHttpContextAccessor bundleHttpContextAccessor,
             ResourceIdProvider resourceIdProvider,
             FhirJsonParser fhirJsonParser,
+            ResourceDeserializer resourceDeserializer,
             ILogger<BundleHandler> logger,
+            Resource subRequestResource,
             CancellationToken cancellationToken)
         {
             EntryComponent entryComponent;
@@ -285,6 +291,7 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
                         auditEventTypeMapping,
                         requestContext,
                         bundleHttpContextAccessor,
+                        subRequestResource,
                         logger);
 
                     // Attempt 1.
@@ -312,7 +319,7 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
 
                     resourceIdProvider.Create = originalResourceIdProvider;
 
-                    entryComponent = CreateEntryComponent(fhirJsonParser, httpContext);
+                    entryComponent = CreateEntryComponent(httpContext);
 
                     foreach (string headerName in HeadersToAccumulate)
                     {
@@ -333,7 +340,7 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
             }
             else
             {
-                entryComponent = new EntryComponent
+                entryComponent = new RawBundleEntryComponent
                 {
                     Response = new ResponseComponent
                     {
@@ -346,7 +353,9 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
                 };
             }
 
-            if (bundleType.Equals(BundleType.Transaction) && entryComponent.Response.Outcome != null)
+            if (bundleType.Equals(BundleType.Transaction)
+                && (entryComponent is RawBundleEntryComponent { ResourceElement.InstanceType: KnownResourceTypes.OperationOutcome }
+                    || entryComponent.Response.Outcome != null))
             {
                 var errorMessage = string.Format(Api.Resources.TransactionFailed, request.HttpContext.Request.Method, request.HttpContext.Request.Path);
 
@@ -355,7 +364,10 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
                     httpStatusCode = HttpStatusCode.BadRequest;
                 }
 
-                TransactionExceptionHandler.ThrowTransactionException(errorMessage, httpStatusCode, (OperationOutcome)entryComponent.Response.Outcome);
+                OperationOutcome outcome = entryComponent.Response.Outcome as OperationOutcome
+                                           ?? ((RawBundleEntryComponent)entryComponent).ResourceElement.ToPoco<OperationOutcome>(resourceDeserializer);
+
+                TransactionExceptionHandler.ThrowTransactionException(errorMessage, httpStatusCode, outcome);
             }
 
             responseBundle.Entry[entryIndex] = entryComponent;
@@ -365,12 +377,13 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
 
         private struct ResourceExecutionContext
         {
-            public ResourceExecutionContext(HTTPVerb httpVerb, RouteContext context, int index, string persistedId)
+            public ResourceExecutionContext(HTTPVerb httpVerb, RouteContext context, int index, string persistedId, Resource resource = null)
             {
                 HttpVerb = httpVerb;
                 Context = context;
                 Index = index;
                 PersistedId = persistedId;
+                Resource = resource;
             }
 
             public HTTPVerb HttpVerb { get; private set; }
@@ -380,6 +393,8 @@ namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
             public int Index { get; private set; }
 
             public string PersistedId { get; private set; }
+
+            public Resource Resource { get; }
         }
     }
 }

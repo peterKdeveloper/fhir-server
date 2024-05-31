@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.Health.Fhir.Api.Features.ContentTypes;
 using Microsoft.Health.Fhir.Core.Extensions;
 using Microsoft.Health.Fhir.Core.Features.Persistence;
+using Microsoft.Health.Fhir.Core.Features.Search;
 using Microsoft.Health.Fhir.Core.Models;
 using Microsoft.Health.Fhir.Shared.Core.Features.Search;
 using Task = System.Threading.Tasks.Task;
@@ -29,7 +30,10 @@ namespace Microsoft.Health.Fhir.Api.Features.Formatters
         private readonly ResourceDeserializer _deserializer;
         private readonly IModelInfoProvider _modelInfoProvider;
 
-        public FhirXmlOutputFormatter(FhirXmlSerializer fhirXmlSerializer, ResourceDeserializer deserializer, IModelInfoProvider modelInfoProvider)
+        public FhirXmlOutputFormatter(
+            FhirXmlSerializer fhirXmlSerializer,
+            ResourceDeserializer deserializer,
+            IModelInfoProvider modelInfoProvider)
         {
             EnsureArg.IsNotNull(fhirXmlSerializer, nameof(fhirXmlSerializer));
             EnsureArg.IsNotNull(deserializer, nameof(deserializer));
@@ -78,20 +82,27 @@ namespace Microsoft.Health.Fhir.Api.Features.Formatters
                     additionalElements.UnionWith(required.Select(x => x.ElementName));
                 }
             }
-            else if (typeof(Hl7.Fhir.Model.Bundle).IsAssignableFrom(context.ObjectType))
+            else if (context.Object is Hl7.Fhir.Model.Bundle bundle)
             {
                 // Need to set Resource property for resources in entries
-                var bundle = context.Object as Hl7.Fhir.Model.Bundle;
-
-                foreach (var entry in bundle.Entry.Where(x => x is RawBundleEntryComponent))
+                foreach (var entry in bundle.Entry)
                 {
-                    var rawResource = entry as RawBundleEntryComponent;
-                    entry.Resource = _deserializer.Deserialize(rawResource.ResourceElement).ToPoco<Resource>();
-                    if (hasElements)
+                    if (entry is RawBundleEntryComponent { ResourceElement: not null } rawBundleEntryComponent)
                     {
-                        var typeinfo = summaryProvider.Provide(entry.Resource.TypeName);
-                        var required = typeinfo.GetElements().Where(e => e.IsRequired).ToList();
-                        additionalElements.UnionWith(required.Select(x => x.ElementName));
+                        Resource poco = rawBundleEntryComponent.ResourceElement.ToPoco<Resource>(_deserializer);
+                        rawBundleEntryComponent.Resource = poco;
+
+                        if (rawBundleEntryComponent.Response is RawBundleResponseComponent { OutcomeElement: not null } outcomeElement)
+                        {
+                            rawBundleEntryComponent.Response.Outcome = outcomeElement.OutcomeElement.ToPoco<OperationOutcome>(_deserializer);
+                        }
+
+                        if (hasElements)
+                        {
+                            var typeinfo = summaryProvider.Provide(entry.Resource.TypeName);
+                            var required = typeinfo.GetElements().Where(e => e.IsRequired).ToList();
+                            additionalElements.UnionWith(required.Select(x => x.ElementName));
+                        }
                     }
                 }
 

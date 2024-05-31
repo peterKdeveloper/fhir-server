@@ -4,6 +4,7 @@
 // -------------------------------------------------------------------------------------------------
 
 using System;
+using System.Diagnostics;
 using EnsureThat;
 using Hl7.Fhir.Introspection;
 using Hl7.Fhir.Model;
@@ -15,6 +16,8 @@ namespace Microsoft.Health.Fhir.Shared.Core.Features.Search
     [FhirType("EntryComponent")]
     public class RawBundleEntryComponent : Bundle.EntryComponent
     {
+        private readonly RawResourceElement _resourceElement;
+
         public RawBundleEntryComponent(ResourceWrapper resourceWrapper)
         {
             EnsureArg.IsNotNull(resourceWrapper, nameof(resourceWrapper));
@@ -22,7 +25,32 @@ namespace Microsoft.Health.Fhir.Shared.Core.Features.Search
             ResourceElement = new RawResourceElement(resourceWrapper);
         }
 
-        public RawResourceElement ResourceElement { get; set; }
+        public RawBundleEntryComponent(RawResourceElement rawResourceElement)
+        {
+            EnsureArg.IsNotNull(rawResourceElement, nameof(rawResourceElement));
+
+            ResourceElement = rawResourceElement;
+        }
+
+        /// <summary>
+        /// A RawBundleEntryComponent with no payload.
+        /// </summary>
+        public RawBundleEntryComponent()
+        {
+        }
+
+        public RawResourceElement ResourceElement
+        {
+            get => _resourceElement;
+            init
+            {
+                Debug.Assert(
+                    !string.Equals(value?.InstanceType, KnownResourceTypes.OperationOutcome, StringComparison.Ordinal),
+                    "OperationOutcome should not be set as a resource element.");
+
+                _resourceElement = value;
+            }
+        }
 
         public override IDeepCopyable DeepCopy()
         {
