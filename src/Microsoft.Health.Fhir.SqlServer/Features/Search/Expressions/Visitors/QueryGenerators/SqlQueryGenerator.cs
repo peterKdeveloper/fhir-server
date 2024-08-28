@@ -105,7 +105,9 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                 // Union expressions must be executed first than all other expressions. The overral idea is that Union All expressions will
                 // filter the highest group of records, and the following expressions will be executed on top of this group of records.
                 // If include, split SQL into 2 parts: 1st filter and preserve data in filtered data table variable, and 2nd - use persisted data
-                StringBuilder.Append("DECLARE @FilteredData AS TABLE (T1 smallint, Sid1 bigint, IsMatch bit, IsPartial bit, Row int");
+
+                // TODO: Remove Not supported by FWH
+                // StringBuilder.Append("DECLARE @FilteredData AS TABLE (T1 smallint, Sid1 bigint, IsMatch bit, IsPartial bit, Row int");
                 var isSortValueNeeded = IsSortValueNeeded(context);
                 if (isSortValueNeeded)
                 {
@@ -119,7 +121,8 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                     }
                 }
 
-                StringBuilder.AppendLine(")");
+                // TODO: Remove Not supported by FWH
+                // StringBuilder.AppendLine(")");
                 StringBuilder.AppendLine(";WITH");
                 var visitedInclude = false;
                 StringBuilder.AppendDelimited($"{Environment.NewLine},", expression.SearchParamTableExpressions.SortExpressionsByQueryLogic(), (sb, tableExpression) =>
@@ -199,14 +202,17 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                 StringBuilder.Append(expression.SearchParamTableExpressions.Count > 0 ? "CAST(IsMatch AS bit) AS IsMatch, " : "CAST(1 AS bit) AS IsMatch, ");
                 StringBuilder.Append(expression.SearchParamTableExpressions.Count > 0 ? "CAST(IsPartial AS bit) AS IsPartial, " : "CAST(0 AS bit) AS IsPartial, ");
 
-                StringBuilder.Append(VLatest.Resource.IsRawResourceMetaSet, resourceTableAlias).Append(", ");
+                // TODO: Remove Not supported by FWH
+                ////StringBuilder.Append(VLatest.Resource.IsRawResourceMetaSet, resourceTableAlias).Append(", ");
 
-                if (_schemaInfo.Current >= SchemaVersionConstants.SearchParameterHashSchemaVersion)
-                {
-                    StringBuilder.Append(VLatest.Resource.SearchParamHash, resourceTableAlias).Append(", ");
-                }
+                ////if (_schemaInfo.Current >= SchemaVersionConstants.SearchParameterHashSchemaVersion)
+                ////{
+                ////    StringBuilder.Append(VLatest.Resource.SearchParamHash, resourceTableAlias).Append(", ");
+                ////}
 
                 StringBuilder.Append(VLatest.Resource.RawResource, resourceTableAlias);
+                StringBuilder.Append(", ").Append(VLatest.Resource.TransactionId, resourceTableAlias);
+                StringBuilder.Append(", ").Append(VLatest.Resource.OffsetInFile, resourceTableAlias);
 
                 if (IsSortValueNeeded(context))
                 {
@@ -228,7 +234,9 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
                 {
                     // If this is a simple search over a resource type (like GET /Observation)
                     // make sure the optimizer does not decide to do a scan on the clustered index, since we have an index specifically for this common case
-                    StringBuilder.Append(" WITH (INDEX(").Append(VLatest.Resource.IX_Resource_ResourceTypeId_ResourceSurrgateId).AppendLine("))");
+                    // TODO: Remove Not supported by FWH
+                    // StringBuilder.Append(" WITH (INDEX(").Append(VLatest.Resource.IX_Resource_ResourceTypeId_ResourceSurrgateId).AppendLine("))");
+                    StringBuilder.AppendLine();
                 }
                 else
                 {
@@ -314,7 +322,8 @@ namespace Microsoft.Health.Fhir.SqlServer.Features.Search.Expressions.Visitors.Q
             // statistics only.  We have seen SQL make poor choices in this instance, so we are making a special case here
             if (AddOptimizeForUnknownClause())
             {
-                StringBuilder.AppendLine("OPTION (OPTIMIZE FOR UNKNOWN)");
+                // TODO: Remove Not supported by FWH
+                // StringBuilder.AppendLine("OPTION (OPTIMIZE FOR UNKNOWN)");
             }
         }
 
